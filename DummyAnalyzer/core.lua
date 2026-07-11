@@ -6146,8 +6146,13 @@ ShowExportDialog = function(castCounts, damageData, buffUptime, playerDuration, 
             return
         end
         local macros, ordered = ParseSequenceLines(seqText)
+        local fullStepNames = {}
+        for _, m in ipairs(macros) do
+            local sn = ExtractSpellFromSeqLine(m)
+            if sn then fullStepNames[#fullStepNames + 1] = sn end
+        end
         -- Create basic bestSequence for Push button
-        Addon.bestSequence = { score = 0, seqText = seqText, importStr = GenerateEMSImportString(simcCastCounts, simcDamage), reasoningText = "Generated from SimC import (no real logs).", orderedSpellNames = ordered }
+        Addon.bestSequence = { score = 0, seqText = seqText, importStr = GenerateEMSImportString(simcCastCounts, simcDamage), reasoningText = "Generated from SimC import (no real logs).", orderedSpellNames = ordered, fullSteps = fullStepNames }
         local persistDb = GetCharDB()
         persistDb.bestSequence = Addon.bestSequence
         -- Show in export dialog
@@ -7664,6 +7669,11 @@ emsPluginHandle = nil  -- populated by RegisterPlugin; nil until handshake succe
 local emsContextCache = "none"
 local emsLoadoutDirty = false
 
+local function Ems_Default(value, fallback)
+    if value == nil then return fallback end
+    return value
+end
+
 local function Ems_BuildSequenceData(seqName, orderedSteps)
     -- orderedSteps: array of spell names (built by ParseSequenceLines at the Best/Next button click)
     -- Returns a full CreateSequence table: action tree (actions) + compiled flat steps.
@@ -7731,10 +7741,10 @@ local function Ems_BuildSequenceData(seqName, orderedSteps)
                 activeStepCount = #macroSteps,
                 keyPress = cfg.keyPress or "/startattack",
                 keyRelease = cfg.keyRelease or "",
-                resetOnCombat = (cfg.resetOnCombat ~= nil) and cfg.resetOnCombat or true,
-                resetOnTarget = (cfg.resetOnTarget ~= nil) and cfg.resetOnTarget or true,
-                resetOnGear = (cfg.resetOnGear ~= nil) and cfg.resetOnGear or false,
-                resetOnSpec = (cfg.resetOnSpec ~= nil) and cfg.resetOnSpec or false,
+                resetOnCombat = Ems_Default(cfg.resetOnCombat, true),
+                resetOnTarget = Ems_Default(cfg.resetOnTarget, true),
+                resetOnGear = Ems_Default(cfg.resetOnGear, false),
+                resetOnSpec = Ems_Default(cfg.resetOnSpec, false),
                 resetTimer = cfg.resetTimer or 0,
                 repeatCount = cfg.repeatCount or 0,
                 actions = actions,
@@ -7860,36 +7870,65 @@ local function Ems_RegisterRegistries()
         id = "dummyanalyzer_deficit_order",
         name = "DummyAnalyzer: Deficit-Ordered",
         Expand = function(_, resolvedStepTexts)
-            local db = GetCharDB and GetCharDB() or nil
-            local order = db and db.bestSequence and db.bestSequence.orderedSpellNames
-            if type(order) ~= "table" or #order == 0 then
-                -- Fallback: pass through unchanged (still pure, deterministic)
+            local steps = resolvedStepTexts or {}
+            local function passthrough()
                 local out = {}
-                for i, t in ipairs(resolvedStepTexts or {}) do out[i] = t end
+                for i, t in ipairs(steps) do out[i] = t end
                 return out
             end
-            -- Reorder input to match optimizer output. Pure.
-            local byName = {}
-            for i, t in ipairs(resolvedStepTexts or {}) do byName[t] = i end
-            local out = {}
+            -- Ordering key must be the NON-deduplicated spell list. orderedSpellNames is
+            -- deduped by ParseSequenceLines, so it cannot express "Kill Command at 1, 5, 9".
+            -- fullSteps is one entry per macro line, in order. Addon.bestSequence is the
+            -- freshest copy (restored from SavedVariables at load); fall back to the char DB.
+            local best = Addon and Addon.bestSequence
+            if not best then
+                local db = GetCharDB and GetCharDB() or nil
+                best = db and db.bestSequence or nil
+            end
+            local order = best and best.fullSteps
+            if type(order) ~= "table" or #order == 0 then
+                return passthrough()
+            end
+            -- EMS hands us resolved MACROTEXT, not spell names. Bucket each entry under the
+            -- spell it casts so a spell appearing N times keeps all N of its entries.
+            local buckets, bucketOrder = {}, {}
+            for _, t in ipairs(steps) do
+                local name = ExtractSpellFromSeqLine(t)
+                if not name then
+                    -- A step shape we do not understand. Never drop steps.
+                    return passthrough()
+                end
+                if not buckets[name] then
+                    buckets[name] = {}
+                    bucketOrder[#bucketOrder + 1] = name
+                end
+                local b = buckets[name]
+                b[#b + 1] = t
+            end
+            if #bucketOrder == 0 then
+                return passthrough()
+            end
+            -- Emit in optimizer order, consuming one occurrence at a time.
+            local out, taken = {}, {}
             for _, name in ipairs(order) do
-                local idx = byName[name]
-                if idx then
-                    out[#out + 1] = resolvedStepTexts[idx]
-                    byName[name] = nil
+                local b = buckets[name]
+                if b then
+                    local i = (taken[name] or 0) + 1
+                    if b[i] then
+                        taken[name] = i
+                        out[#out + 1] = b[i]
+                    end
                 end
             end
-            -- Append any leftovers the user added that the optimizer didn't see
-            for _, t in ipairs(resolvedStepTexts or {}) do
-                -- dedup via second pass
-            end
-            local seen = {}
-            for _, s in ipairs(out) do seen[s] = true end
-            for _, t in ipairs(resolvedStepTexts or {}) do
-                if not seen[t] then
-                    out[#out + 1] = t
-                    seen[t] = true
+            -- Append anything the optimizer never saw, in its original order.
+            for _, name in ipairs(bucketOrder) do
+                local b = buckets[name]
+                for i = (taken[name] or 0) + 1, #b do
+                    out[#out + 1] = b[i]
                 end
+            end
+            if #out == 0 then
+                return passthrough()
             end
             return out
         end,
@@ -7939,10 +7978,21 @@ function DummyAnalyzer_EMS_OnEnable(handle)
     if handle then emsPluginHandle = handle end
     Ems_RegisterRegistries()
     Ems_RegisterEvents()
+    -- GEMS_UI_READY may have already fired before this plugin registered, in which case the
+    -- event hook in Ems_RegisterEvents never runs and the providers are never registered.
+    -- Call directly too; EMS rejects a duplicate id with (false, reason), which the callee
+    -- already handles, so the double call is safe.
+    Ems_PushImportExportProviders()
     -- Promote existing bestSequence into EMS if one is already persisted
     local db = GetCharDB()
     if db and db.bestSequence and type(db.bestSequence.seqText) == "string" and db.bestSequence.seqText ~= "" then
-        local ordered = db.bestSequence.orderedSpellNames
+        -- fullSteps is the non-deduplicated step list; orderedSpellNames collapses repeats, so
+        -- promoting from it would re-create "A B A C A B" in EMS as "A B C" after every reload.
+        -- Fall back to orderedSpellNames only for SavedVariables written before fullSteps existed.
+        local ordered = db.bestSequence.fullSteps
+        if type(ordered) ~= "table" or #ordered == 0 then
+            ordered = db.bestSequence.orderedSpellNames
+        end
         if type(ordered) == "table" and #ordered > 0 then
             Ems_PushBestSequence(ordered)
         end
