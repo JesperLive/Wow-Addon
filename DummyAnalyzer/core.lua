@@ -3,9 +3,12 @@ local AddonName, Addon = ...
 -- PATHS & CONSTANTS
 -- ============================================
 local SKINS_DIR = "Interface\\AddOns\\" .. AddonName .. "\\Skins\\"
-local GRIP_FONTS = "Interface\\AddOns\\GRIP-EMS\\Media\\Fonts\\"
-local FONT = GRIP_FONTS .. "AtkinsonHyperlegible-Regular.ttf"
-local FONT_BOLD = GRIP_FONTS .. "AtkinsonHyperlegible-Bold.ttf"
+-- Fonts are bundled in Skins/ (Atkinson Hyperlegible, SIL OFL 1.1 -- see Skins/OFL.txt).
+-- These previously pointed into GRIP-EMS's own Media/Fonts folder, coupling this addon to
+-- another addon's internal file layout. An EMS reorg would make SetFont fail silently and
+-- render text invisible rather than erroring.
+local FONT = SKINS_DIR .. "AtkinsonHyperlegible-Regular.ttf"
+local FONT_BOLD = SKINS_DIR .. "AtkinsonHyperlegible-Bold.ttf"
 local MAIN_FONT = FONT
 local BOLD_FONT = FONT_BOLD
 
@@ -1107,8 +1110,10 @@ local function DetectGRIPSequence(castCounts, testStartSeq, inferredFunction)
     end
 
     -- Fall back: frequency + order matching across all sequences
-    local eng = _G.GRIPEMS and _G.GRIPEMS.Engine
-    local clickName = eng and eng._lastClickedSequence or nil
+    -- Sourced from the public SEQUENCE_STEP_ADVANCED event (see Ems_RegisterEvents) rather
+    -- than the undocumented GRIPEMS.Engine._lastClickedSequence field. It also reflects real
+    -- execution instead of a click that may never have fired a step.
+    local clickName = Addon.lastActiveSequence
     local directMatchName = nil
     if clickName and testStartSeq and clickName == testStartSeq then
         directMatchName = clickName
@@ -3575,12 +3580,9 @@ local function BeginActiveTest(minutes)
     testActive = true
     startTime = GetTime()
     testEndTime = nil
-    -- Snapshot which GRIP-EMS sequence is active at test start
-    Addon.testStartSequence = nil
-    local eng = _G.GRIPEMS and _G.GRIPEMS.Engine
-    if eng and eng._lastClickedSequence then
-        Addon.testStartSequence = eng._lastClickedSequence
-    end
+    -- Snapshot which GRIP-EMS sequence is active at test start. Sourced from the public
+    -- SEQUENCE_STEP_ADVANCED event (see Ems_RegisterEvents), not from Engine internals.
+    Addon.testStartSequence = Addon.lastActiveSequence
     StartBuffTicker()
     local minuteText = minutes == 0.5 and "30 sec" or (minutes .. " min")
     print(string.format("|cff33ff33[DummyAnalyzer]|r Test started: %s", minuteText))
@@ -7664,7 +7666,7 @@ end)
 -- ============================================
 local EMS_PLUGIN_ID = "dummyanalyzer"
 local EMS_PLUGIN_NAME = "DummyAnalyzer EMS Plugin"
-local EMS_PLUGIN_VERSION = "2.1.0"
+local EMS_PLUGIN_VERSION = "2.2.0"
 emsPluginHandle = nil  -- populated by RegisterPlugin; nil until handshake succeeds
 local emsContextCache = "none"
 local emsLoadoutDirty = false
@@ -7960,6 +7962,13 @@ local function Ems_RegisterEvents()
         emsLoadoutDirty = true
     end)
     API:On("SETTING_CHANGED", function(_key, _value) end)
+    -- Tracks which sequence is actually executing. This is the public replacement for the old
+    -- read of GRIPEMS.Engine._lastClickedSequence. Payload: (seqName, step, numSteps).
+    API:On("SEQUENCE_STEP_ADVANCED", function(seqName)
+        if type(seqName) == "string" and seqName ~= "" then
+            Addon.lastActiveSequence = seqName
+        end
+    end)
     API:On("PLUGIN_SEQUENCES_LOADED", function()
         emsContextCache = tostring(API:GetCurrentContext() or "none")
     end)
