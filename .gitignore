@@ -1,0 +1,25 @@
+# Editors / IDEs
+.vscode/
+.idea/
+*.code-workspace
+*.sublime-workspace
+
+# opencode / agent tooling
+.opencode/
+opencode.db
+*.db-journal
+
+# Packaging output
+.release/
+*.zip
+
+# Backups and scratch
+*.bak
+*.orig
+*.rej
+*~
+
+# OS noise
+.DS_Store
+Thumbs.db
+desktop.ini
