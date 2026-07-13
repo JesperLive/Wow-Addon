@@ -6333,7 +6333,15 @@ local pushBtn = CreateStyledButton(bottomRow, "Push to GRIP-EMS", 170, 32, funct
         end
     end
     local initContent
-    if seqText and seqText ~= "" then
+    if suggestMode and Addon.bestSequence and Addon.bestSequence.seqText and Addon.bestSequence.seqText ~= "" then
+        local macros, ordered = ParseSequenceLines(Addon.bestSequence.seqText)
+        local ctx = { logLabel = "suggested", id = nil }
+        local deficit = ComputeDeficitSnapshot(castCounts, GetCharDB().simcData, playerDuration)
+        initContent = GetSimcWarning() .. BuildKidFriendlyDisplay("best", ctx, Addon.bestSequence.score or 0, playerDuration or 1, macros, ordered, deficit)
+        seqText = Addon.bestSequence.seqText
+        importStr = Addon.bestSequence.importStr or importStr
+        reasoningText = Addon.bestSequence.reasoningText or reasoningText
+    elseif seqText and seqText ~= "" then
         local macros, ordered = ParseSequenceLines(seqText)
         local ctx = { logLabel = "suggested", id = nil }
         local deficit = ComputeDeficitSnapshot(castCounts, GetCharDB().simcData, playerDuration)
