@@ -23,3 +23,7 @@ opencode.db
 .DS_Store
 Thumbs.db
 desktop.ini
+
+# Auto-sync noise
+auto-sync.log
+CONFLICT_FLAG.txt
