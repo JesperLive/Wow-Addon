@@ -3231,72 +3231,7 @@ end
 
 local notesDialog = nil
 
-local function ShowNotesDialog(logId, currentNotes)
-    if notesDialog then notesDialog:Hide() notesDialog = nil end
 
-    notesDialog = CreateStyledFrame("Frame", "DummyAnalyzerNotesFrame", UIParent); trackDialog(notesDialog)
-    notesDialog:SetSize(500, 260)
-    notesDialog:SetPoint("CENTER")
-    notesDialog:SetFrameStrata("DIALOG")
-    notesDialog:SetMovable(true)
-    notesDialog:SetClampedToScreen(true)
-    notesDialog:EnableMouse(true)
-    notesDialog:RegisterForDrag("LeftButton")
-    notesDialog:SetScript("OnDragStart", notesDialog.StartMoving)
-    notesDialog:SetScript("OnDragStop", notesDialog.StopMovingOrSizing)
-    ApplyBackdrop(notesDialog, false)
-
-    local titleBar = CreateStyledFrame("Frame", nil, notesDialog)
-    titleBar:SetPoint("TOPLEFT", notesDialog, "TOPLEFT")
-    titleBar:SetPoint("TOPRIGHT", notesDialog, "TOPRIGHT")
-    titleBar:SetHeight(28)
-    titleBar:SetBackdrop({bgFile = "Interface\\BUTTONS\\WHITE8X8", edgeSize = 0})
-    titleBar:SetBackdropColor(C.title[1], C.title[2], C.title[3], C.title[4])
-    titleBar:EnableMouse(true)
-    titleBar:RegisterForDrag("LeftButton")
-    titleBar:SetScript("OnDragStart", function() notesDialog:StartMoving() end)
-    titleBar:SetScript("OnDragStop", function() notesDialog:StopMovingOrSizing() end)
-
-    local titleText = titleBar:CreateFontString(nil, "OVERLAY")
-    SafeSetFont(titleText, BOLD_FONT, 13)
-    titleText:SetText("Edit Notes")
-    titleText:SetPoint("CENTER")
-    titleText:SetTextColor(C.textHl[1], C.textHl[2], C.textHl[3], C.textHl[4])
-
-    local label = notesDialog:CreateFontString(nil, "OVERLAY")
-    SafeSetFont(label, MAIN_FONT, 11)
-    label:SetText("What changed in this test? (included in exports)")
-    label:SetPoint("TOPLEFT", notesDialog, "TOPLEFT", 20, -45)
-    label:SetTextColor(C.text[1], C.text[2], C.text[3], C.text[4])
-
-    local editBox = CreateFrame("EditBox", nil, notesDialog, "InputBoxTemplate")
-    editBox:SetSize(460, 100)
-    editBox:SetPoint("TOPLEFT", label, "BOTTOMLEFT", 0, -8)
-    editBox:SetAutoFocus(true)
-    editBox:SetMultiLine(true)
-    editBox:SetText(currentNotes or "")
-    editBox:SetScript("OnEscapePressed", function() notesDialog:Hide() end)
-
-    local okBtn = CreateStyledButton(notesDialog, "Save", 80, 26, function()
-        local newNotes = editBox:GetText() or ""
-        for _, log in ipairs(GetCharDB().logs) do
-            if log.id == logId then
-                log.notes = newNotes
-                break
-            end
-        end
-        notesDialog:Hide()
-        print("|cff33ff33[DummyAnalyzer]|r Notes saved.")
-    end, "primary")
-    okBtn:SetPoint("BOTTOMRIGHT", notesDialog, "BOTTOMRIGHT", -15, 15)
-
-    local cancelBtn = CreateStyledButton(notesDialog, "Cancel", 80, 26, function() notesDialog:Hide() end)
-    cancelBtn:SetPoint("RIGHT", okBtn, "LEFT", -10, 0)
-
-    RegisterAddonWindow(notesDialog)
-    notesDialog:Show()
-    C_Timer.After(0.1, function() editBox:SetFocus() end)
-end
 
 local function CreateSavedLogsBrowser()
     if mainFrame then mainFrame:Hide() end
@@ -3393,29 +3328,25 @@ local function CreateSavedLogsBrowser()
     end)
     renameBtn:SetPoint("LEFT", compareBtn, "RIGHT", 10, 0)
 
-    local notesBtn = CreateStyledButton(savedLogsFrame, "Notes", 80, 28, function()
+    local viewBtn = CreateStyledButton(savedLogsFrame, "View", 80, 28, function()
         local selected = getSelected()
         if #selected ~= 1 then
-            print("|cff33ff33[DummyAnalyzer]|r Select exactly 1 log to edit notes.")
+            print("|cff33ff33[DummyAnalyzer]|r Select exactly 1 log to view its report.")
             return
         end
-        local logId = selected[1]
-        local currentNotes = ""
-        for _, log in ipairs(GetCharDB().logs) do
-            if log.id == logId then
-                currentNotes = log.notes or ""
-                break
+        local logs = Addon.GetSavedLogs()
+        for _, log in ipairs(logs) do
+            if log.id == selected[1] then
+                local report = GenerateMarkdownReport(log, log.duration or 0, log.totalDamage or 0, log.totalCasts or 0, log.castCounts or {}, log.damageData or {}, log.buffUptime or {}, log.buffGaps or {}, log.notes or "", log.debuffUptime or {}, nil)
+                ShowComparisonPopup(report)
+                return
             end
         end
-        ShowNotesDialog(logId, currentNotes)
     end)
-    notesBtn:SetPoint("LEFT", renameBtn, "RIGHT", 10, 0)
+    viewBtn:SetPoint("LEFT", renameBtn, "RIGHT", 10, 0)
 
     local simcImportBtn = CreateStyledButton(savedLogsFrame, "Import SimC", 110, 28, ShowSimCImportDialog)
-    simcImportBtn:SetPoint("LEFT", notesBtn, "RIGHT", 10, 0)
-
-    local clogImportBtn = CreateStyledButton(savedLogsFrame, "Combat Log", 110, 28, Addon.ShowCombatLogImportDialog)
-    clogImportBtn:SetPoint("LEFT", simcImportBtn, "RIGHT", 10, 0)
+    simcImportBtn:SetPoint("LEFT", viewBtn, "RIGHT", 10, 0)
 
     local deleteBtn = CreateStyledButton(savedLogsFrame, "Delete Selected", 130, 28, function()
         local toDelete = getSelected()
@@ -3462,6 +3393,9 @@ local function CreateSavedLogsBrowser()
         end
     end)
     viewSeqBtn:SetPoint("LEFT", deleteBtn, "RIGHT", 10, 0)
+
+    local clogImportBtn = CreateStyledButton(savedLogsFrame, "Combat Log", 110, 28, Addon.ShowCombatLogImportDialog)
+    clogImportBtn:SetPoint("LEFT", viewSeqBtn, "RIGHT", 10, 0)
 
     local scrollFrame = CreateFrame("ScrollFrame", nil, savedLogsFrame)
     scrollFrame:SetPoint("TOPLEFT", savedLogsFrame, "TOPLEFT", 20, -130)
