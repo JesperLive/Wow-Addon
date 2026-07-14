@@ -3337,8 +3337,42 @@ local function CreateSavedLogsBrowser()
         local logs = Addon.GetSavedLogs()
         for _, log in ipairs(logs) do
             if log.id == selected[1] then
-                local report = GenerateMarkdownReport(log, log.duration or 0, log.totalDamage or 0, log.totalCasts or 0, log.castCounts or {}, log.damageData or {}, log.buffUptime or {}, log.buffGaps or {}, log.notes or "", log.debuffUptime or {}, nil)
-                ShowComparisonPopup(report)
+                local savedDuration = currentDuration
+                local savedStartSeq = Addon.testStartSequence
+                local savedTestActive = testActive
+                local savedStartTime = startTime
+                local savedEndTime = testEndTime
+                local savedTotalDmg = totalDamage
+                local savedSpellHist = spellHistory
+                local savedDamData = damageData
+                local savedBuffUp = buffUptime
+                local savedBuffGaps = buffGaps
+                local savedDebuffUp = debuffUptime
+                local savedPowerCosts = spellPowerCosts
+                currentDuration = log.duration or 0
+                testActive = false
+                startTime = 0
+                testEndTime = log.duration or 0
+                totalDamage = log.totalDamage or 0
+                spellHistory = log.spellHistory or {}
+                damageData = log.damageData or {}
+                buffUptime = log.buffUptime or {}
+                buffGaps = log.buffGaps or {}
+                debuffUptime = log.debuffUptime or {}
+                spellPowerCosts = log.spellPowerCosts or {}
+                ShowReport()
+                currentDuration = savedDuration
+                Addon.testStartSequence = savedStartSeq
+                testActive = savedTestActive
+                startTime = savedStartTime
+                testEndTime = savedEndTime
+                totalDamage = savedTotalDmg
+                spellHistory = savedSpellHist
+                damageData = savedDamData
+                buffUptime = savedBuffUp
+                buffGaps = savedBuffGaps
+                debuffUptime = savedDebuffUp
+                spellPowerCosts = savedPowerCosts
                 return
             end
         end
