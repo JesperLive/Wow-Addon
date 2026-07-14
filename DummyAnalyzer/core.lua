@@ -4580,13 +4580,10 @@ GenerateSuggestedSequence = function(castCounts, damageData, buffUptime, duratio
         end
     end
 
-    -- =====================================================
-    -- 14. INTERLEAVE CANDIDATES (auto-calc interval value; cfg.interleave = min count)
-    -- =====================================================
+    -- ponytail: interleave only when explicitly enabled (positive cfg.interleave)
     local interleaveCandidates = {}
-    local minInterleave = cfg.interleave or 0
-    if minInterleave > 0 then
-        -- Exact count: pick top N most-frequent spells
+    local minInterleave = cfg.interleave
+    if minInterleave and minInterleave > 0 then
         local sorted = {}
         for name, cnt in pairs(stepCounts) do
             if not isLongCD(name) then
@@ -4596,17 +4593,6 @@ GenerateSuggestedSequence = function(castCounts, damageData, buffUptime, duratio
         table.sort(sorted, function(a, b) return a.count > b.count end)
         for i = 1, math.min(minInterleave, #sorted) do
             interleaveCandidates[sorted[i].name] = math.max(2, math.floor(#finalSteps / sorted[i].count))
-        end
-    else
-        -- Auto-calc: high-frequency threshold
-        local maxCount = 0
-        for _, cnt in pairs(stepCounts) do
-            if cnt > maxCount then maxCount = cnt end
-        end
-        for name, cnt in pairs(stepCounts) do
-            if cnt >= 5 and cnt >= maxCount * 0.4 and not isLongCD(name) then
-                interleaveCandidates[name] = math.max(2, math.floor(#finalSteps / cnt))
-            end
         end
     end
 
@@ -4638,6 +4624,9 @@ GenerateSuggestedSequence = function(castCounts, damageData, buffUptime, duratio
     seqLines[#seqLines + 1] = "Step Function: " .. (cfg.stepFunction or "Priority")
     seqLines[#seqLines + 1] = "Reset: combat/target"
     seqLines[#seqLines + 1] = ""
+    if cfg.loopBlock then
+        seqLines[#seqLines + 1] = "[loop]"
+    end
     local intervalDisplayed = {}
     for i, name in ipairs(finalSteps) do
         local prefix = GetActionPrefix(name)
@@ -4646,6 +4635,9 @@ GenerateSuggestedSequence = function(castCounts, damageData, buffUptime, duratio
             intervalDisplayed[name] = true
         end
         seqLines[#seqLines + 1] = string.format("%2d. %s [combat] %s%s", i, prefix, name, suffix)
+    end
+    if cfg.loopBlock then
+        seqLines[#seqLines + 1] = "[/loop]"
     end
     seqText = table.concat(seqLines, "\n")
 
@@ -5344,9 +5336,12 @@ ShowConfigureDialog = function(parent)
                 table.sort(spellPool)
             end
 
-            local reqContainer = CreateFrame("Frame", nil, panel)
-            reqContainer:SetPoint("TOPLEFT", panel, "TOPLEFT", 8, -8)
-            reqContainer:SetPoint("BOTTOMRIGHT", panel, "BOTTOMRIGHT", -8, -44)
+            local reqScroll = CreateFrame("ScrollFrame", nil, panel, "UIPanelScrollFrameTemplate")
+            reqScroll:SetPoint("TOPLEFT", panel, "TOPLEFT", 8, -8)
+            reqScroll:SetPoint("BOTTOMRIGHT", panel, "BOTTOMRIGHT", -8, -44)
+            local reqContainer = CreateFrame("Frame", nil, reqScroll)
+            reqContainer:SetWidth(400)
+            reqScroll:SetScrollChild(reqContainer)
 
             local reqRows = {}
             local MAX_REQ_SLOTS = 20
@@ -5461,8 +5456,8 @@ ShowConfigureDialog = function(parent)
                 return eb
             end)
 
-            -- Interleave steps (minimum count, value auto-calc'd)
-            local interleaveCtrl = AddLabeledControl("Min Interleave Steps (0=auto):", function(p)
+            -- Interleave steps (minimum count, 0 = disabled)
+            local interleaveCtrl = AddLabeledControl("Min Interleave Steps (0=off):", function(p)
                 local eb = CreateFrame("EditBox", nil, p, "BackdropTemplate")
                 eb:SetSize(140, 24)
                 eb:SetFontObject(ChatFontNormal)
@@ -5542,6 +5537,28 @@ ShowConfigureDialog = function(parent)
             apHint:SetPoint("LEFT", apBtn, "RIGHT", 6, 0)
             apHint:SetText("Auto-push when Best Sequence is generated")
             apHint:SetTextColor(C.text[1], C.text[2], C.text[3], 0.5)
+            y = y - 36
+
+            -- Loop block checkbox
+            local lpLabel = panel:CreateFontString(nil, "OVERLAY")
+            SafeSetFont(lpLabel, FONT, 11)
+            lpLabel:SetPoint("TOPLEFT", panel, "TOPLEFT", 16, y)
+            lpLabel:SetText("Wrap in [loop] block:")
+            lpLabel:SetTextColor(C.textHl[1], C.textHl[2], C.textHl[3], C.textHl[4])
+            local lpBtn = CreateStyledFrame("Button", nil, panel)
+            lpBtn:SetSize(18, 18)
+            lpBtn:SetPoint("TOPLEFT", panel, "TOPLEFT", 260, y - 2)
+            lpBtn:SetBackdrop({bgFile = "Interface\\BUTTONS\\WHITE8X8", edgeSize = 0})
+            lpBtn:SetBackdropColor(s.loopBlock and 0.2 or 0.05, s.loopBlock and 0.8 or 0.05, s.loopBlock and 0.2 or 0.05, 0.9)
+            lpBtn:SetScript("OnClick", function()
+                s.loopBlock = not s.loopBlock
+                lpBtn:SetBackdropColor(s.loopBlock and 0.2 or 0.05, s.loopBlock and 0.8 or 0.05, s.loopBlock and 0.2 or 0.05, 0.9)
+            end)
+            local lpHint = panel:CreateFontString(nil, "OVERLAY")
+            SafeSetFont(lpHint, FONT, 9)
+            lpHint:SetPoint("LEFT", lpBtn, "RIGHT", 6, 0)
+            lpHint:SetText("Wraps main steps in [loop]...[/loop]")
+            lpHint:SetTextColor(C.text[1], C.text[2], C.text[3], 0.5)
             y = y - 36
 
             -- KeyPress edit
