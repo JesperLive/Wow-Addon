@@ -235,7 +235,9 @@ local function RegisterAddonWindow(frame)
 end
 
 -- Pure helper: turn a raw heuristic seqText (which may include headings/metadata) into a
--- clean list of /cast lines AND a deduped spell-name array. Pure: no global state.
+-- clean list of /cast lines AND a deduped spell-name array. Step lines come in two
+-- formats: "1. /cast [combat] X" (generated text, legacy logs) and bare "1. Fireball"
+-- (logs whose steps were resolved through the EMS public API). Pure: no global state.
 -- Used by both the generation handlers and the Push button, so the closure never has to
 -- chase upvalues.
 local function ParseSequenceLines(rawSeq)
@@ -243,12 +245,27 @@ local function ParseSequenceLines(rawSeq)
     local macros, ordered, seen = {}, {}, {}
     for line in rawSeq:gmatch("[^\n]+") do
         local trimmed = line:gsub("^%s*", ""):gsub("%s*$", "")
-        trimmed = trimmed:gsub("^%d+%.%s*", "")  -- strip "1. " numbered prefix
-        if trimmed:sub(1, 1) == "/" then
+        local numbered
+        trimmed, numbered = trimmed:gsub("^%d+%.%s*", "")  -- strip "1. " numbered prefix
+        local first = trimmed:sub(1, 1)
+        if first == "/" then
             local spell = trimmed:gsub("^/%a+%s+%[?combat%]?%s*", "")
             local cleanSpell = spell:gsub("%s*%(interval:%d+%)$", ""):gsub("%s*%[dupe%]", ""):gsub("%s*$", "")
             if spell ~= "" then
                 macros[#macros + 1] = "/cast [combat] " .. spell
+                if not seen[cleanSpell] then
+                    seen[cleanSpell] = true
+                    ordered[#ordered + 1] = cleanSpell
+                end
+            end
+        elseif numbered > 0 and first ~= "" and first ~= "#" and first ~= "=" then
+            -- Numbered line with no slash command: a bare spell name ("1. Fireball").
+            -- The numbered gate keeps this branch closed to generated-text metadata
+            -- lines (Spec:, Icon:, Step Function:, Reset: are never numbered); the
+            -- "#" exclusion skips macro directives from legacy multi-line macros.
+            local cleanSpell = trimmed:gsub("%s*%(interval:%d+%)$", ""):gsub("%s*%[dupe%]", ""):gsub("%s*$", "")
+            if cleanSpell ~= "" then
+                macros[#macros + 1] = "/cast [combat] " .. cleanSpell
                 if not seen[cleanSpell] then
                     seen[cleanSpell] = true
                     ordered[#ordered + 1] = cleanSpell
@@ -1025,6 +1042,66 @@ local function ExtractSpellFromSeqLine(line)
     return name
 end
 
+local function GetCandidateSequences()
+    local out = {}
+    local API = _G.GRIPEMS and _G.GRIPEMS.API
+    if API and API.GetAuthoredSteps and API.GetSequenceList then
+        -- Public path (EMS v2.3.7+): authored base order, interleave copies
+        -- suppressed, spell names resolved by EMS itself. Active version.
+        local list = API:GetSequenceList() or {}
+        for _, summary in ipairs(list) do
+            local seqName = summary and summary.name
+            if type(seqName) == "string" and seqName ~= "" then
+                local entries = API:GetAuthoredSteps(seqName)
+                if type(entries) == "table" and #entries > 0 then
+                    local names = {}
+                    for _, e in ipairs(entries) do
+                        local sn = e and e.spellName
+                        if type(sn) == "string" and sn ~= "" then
+                            names[#names + 1] = sn
+                        end
+                    end
+                    if #names > 0 then
+                        out[#out + 1] = {
+                            name = seqName,
+                            names = names,
+                            stepFunction = summary.stepFunction,
+                        }
+                    end
+                end
+            end
+        end
+        return out
+    end
+    -- Legacy fallback (EMS v2.3.6 and older: GetAuthoredSteps not on the API
+    -- surface). Raw SavedVariables walk. Delete this branch when the minimum
+    -- supported EMS version reaches v2.3.7.
+    if not _G.GRIP_EMS_CHAR or not _G.GRIP_EMS_CHAR.sequences then
+        return out
+    end
+    for seqName, seq in pairs(_G.GRIP_EMS_CHAR.sequences) do
+        local ver = seq.versions and seq.versions[seq.defaultVersion or 1]
+        if ver then
+            local macros = GetStepMacros(ver)
+            local names = {}
+            for _, step in ipairs(macros) do
+                local sn = ExtractSpellName(step)
+                if sn and sn ~= "" then
+                    names[#names + 1] = sn
+                end
+            end
+            if #names > 0 then
+                out[#out + 1] = {
+                    name = seqName,
+                    names = names,
+                    stepFunction = ver.stepFunction,
+                }
+            end
+        end
+    end
+    return out
+end
+
 local function InferStepFunction(history)
     if not history or #history < 4 then return nil end
     local names = {}
@@ -1084,114 +1161,105 @@ local function OrderCorrelation(history, macros)
     return math.max(0, 1 - avgWeighted / 10)
 end
 
+-- Candidates come from GetCandidateSequences: the EMS public API when
+-- available (authored order, resolved names), the raw SavedVariables walk
+-- on older EMS builds. All candidate step lists are bare spell names.
 local function DetectGRIPSequence(castCounts, testStartSeq, inferredFunction)
-    if not _G.GRIP_EMS_CHAR or not _G.GRIP_EMS_CHAR.sequences then return nil end
-    local sequences = _G.GRIP_EMS_CHAR.sequences
+    local candidates = GetCandidateSequences()
+    if #candidates == 0 then return nil end
 
     local totalCasts = 0
     for _, c in pairs(castCounts) do totalCasts = totalCasts + c end
     if totalCasts == 0 then return nil end
 
+    local byName = {}
+    for _, cand in ipairs(candidates) do byName[cand.name] = cand end
+
     -- Test-start snapshot is the most reliable signal for which sequence was active
-    if testStartSeq and sequences[testStartSeq] then
-        local seq = sequences[testStartSeq]
-        local ver = seq.versions and seq.versions[seq.defaultVersion or 1]
-        if ver then
-            local macros = GetStepMacros(ver)
-            if #macros > 0 then
-                return {
-                    name = testStartSeq,
-                    steps = DeepCopy(macros),
-                    stepFunction = ver.stepFunction,
-                    matchScore = 1.0,
-                }
-            end
-        end
+    if testStartSeq and byName[testStartSeq] then
+        local cand = byName[testStartSeq]
+        return {
+            name = testStartSeq,
+            steps = DeepCopy(cand.names),
+            stepFunction = cand.stepFunction,
+            matchScore = 1.0,
+        }
     end
 
-    -- Fall back: frequency + order matching across all sequences
-    -- Sourced from the public SEQUENCE_STEP_ADVANCED event (see Ems_RegisterEvents) rather
-    -- than the undocumented GRIPEMS.Engine._lastClickedSequence field. It also reflects real
+    -- Fall back: frequency + order matching across all candidates.
+    -- lastActiveSequence is sourced from the public SEQUENCE_STEP_ADVANCED
+    -- event (see Ems_RegisterEvents) rather than the undocumented
+    -- GRIPEMS.Engine._lastClickedSequence field. It also reflects real
     -- execution instead of a click that may never have fired a step.
     local clickName = Addon.lastActiveSequence
     local directMatchName = nil
     if clickName and testStartSeq and clickName == testStartSeq then
         directMatchName = clickName
-    elseif clickName and sequences[clickName] then
+    elseif clickName and byName[clickName] then
         directMatchName = clickName
     end
 
     local bestMatch = nil
     local bestScore = 0
-    local bestRawScore = 0
-    local bestMacros = nil
+    local bestNames = nil
 
-    for name, seq in pairs(sequences) do
-        repeat
-            local ver = seq.versions and seq.versions[seq.defaultVersion or 1]
-            if not ver then break end
-            local macros = GetStepMacros(ver)
-            if #macros == 0 then break end
+    for _, cand in ipairs(candidates) do
+        local names = cand.names
 
-            local seqStepCount = {}
-            local totalSteps = 0
-            for _, step in ipairs(macros) do
-                local spellName = ExtractSpellName(step)
-                if spellName and spellName ~= "" then
-                    seqStepCount[spellName] = (seqStepCount[spellName] or 0) + 1
-                    totalSteps = totalSteps + 1
+        local seqStepCount = {}
+        local totalSteps = 0
+        for _, spellName in ipairs(names) do
+            seqStepCount[spellName] = (seqStepCount[spellName] or 0) + 1
+            totalSteps = totalSteps + 1
+        end
+
+        local presenceMatchCount = 0
+        local freqScore = 0
+        local totalSeq = 0
+        for spellName, stepCount in pairs(seqStepCount) do
+            totalSeq = totalSeq + 1
+            if castCounts[spellName] then
+                presenceMatchCount = presenceMatchCount + 1
+                local seqRatio = stepCount / totalSteps
+                local castRatio = castCounts[spellName] / totalCasts
+                local ratio = castRatio > 0 and seqRatio / castRatio or 0
+                if ratio >= 0.5 and ratio <= 2.0 then
+                    freqScore = freqScore + seqRatio
                 end
             end
-            if totalSteps == 0 then break end
+        end
+        local presenceScore = totalSeq > 0 and (presenceMatchCount / totalSeq) or 0
+        local score = (presenceScore * 0.6) + (freqScore * 0.4)
 
-            local presenceMatchCount = 0
-            local freqScore = 0
-            local totalSeq = 0
-            for spellName, stepCount in pairs(seqStepCount) do
-                totalSeq = totalSeq + 1
-                if castCounts[spellName] then
-                    presenceMatchCount = presenceMatchCount + 1
-                    local seqRatio = stepCount / totalSteps
-                    local castRatio = castCounts[spellName] / totalCasts
-                    local ratio = castRatio > 0 and seqRatio / castRatio or 0
-                    if ratio >= 0.5 and ratio <= 2.0 then
-                        freqScore = freqScore + seqRatio
-                    end
-                end
-            end
-            local presenceScore = totalSeq > 0 and (presenceMatchCount / totalSeq) or 0
-            local score = (presenceScore * 0.6) + (freqScore * 0.4)
+        if cand.name == directMatchName then
+            score = math.min(1.0, score + 0.3)
+        end
 
-            if name == directMatchName then
-                score = math.min(1.0, score + 0.3)
-            end
+        if inferredFunction and cand.stepFunction and cand.stepFunction ~= inferredFunction then
+            score = score * 0.7
+        end
 
-            if inferredFunction and ver.stepFunction and ver.stepFunction ~= inferredFunction then
-                score = score * 0.7
+        if bestScore > 0 and score > bestScore - 0.15 and score < bestScore + 0.15 and bestNames then
+            local curOrder = OrderCorrelation(spellHistory, names)
+            local bestOrder = OrderCorrelation(spellHistory, bestNames)
+            if curOrder > bestOrder + 0.01 then
+                score = bestScore + 0.01
+            elseif curOrder < bestOrder - 0.01 then
+                score = -1
             end
+        end
+        local totalScore = score
 
-            if bestScore > 0 and score > bestScore - 0.15 and score < bestScore + 0.15 and bestMacros then
-                local curOrder = OrderCorrelation(spellHistory, macros)
-                local bestOrder = OrderCorrelation(spellHistory, bestMacros)
-                if curOrder > bestOrder + 0.01 then
-                    score = bestScore + 0.01
-                elseif curOrder < bestOrder - 0.01 then
-                    score = -1
-                end
-            end
-            local totalScore = score
-
-            if totalScore > bestScore then
-                bestScore = totalScore
-                bestMatch = {
-                    name = name,
-                    steps = DeepCopy(macros),
-                    stepFunction = ver.stepFunction,
-                    matchScore = score,
-                }
-                bestMacros = macros
-            end
-        until true
+        if totalScore > bestScore then
+            bestScore = totalScore
+            bestMatch = {
+                name = cand.name,
+                steps = DeepCopy(names),
+                stepFunction = cand.stepFunction,
+                matchScore = score,
+            }
+            bestNames = names
+        end
     end
     return bestScore >= 0.5 and bestMatch or nil
 end
