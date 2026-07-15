@@ -4666,10 +4666,6 @@ GenerateSuggestedSequence = function(castCounts, damageData, buffUptime, duratio
                 })
             end
 	end
-	
-	if cfg.loopBlock then
-		actions = {{ type = "loop", children = actions }}
-	end
 
 	local classID = select(3, UnitClass("player"))
 	local specID  = spec and GetSpecializationInfo(spec)
@@ -4981,7 +4977,7 @@ end
 -- ============================================
 -- EMS IMPORT STRING GENERATION
 -- ============================================
-GenerateEMSImportString = function(castCounts, damageData, orderedSteps, wrapInLoop)
+GenerateEMSImportString = function(castCounts, damageData, orderedSteps)
     if not castCounts or not next(castCounts) then return nil end
     if not C_EncodingUtil then return nil end
     local sorted = {}
@@ -5076,9 +5072,6 @@ GenerateEMSImportString = function(castCounts, damageData, orderedSteps, wrapInL
                 macro = string.format("%s [combat] %s", prefix, sorted[i].name),
             })
         end
-    end
-    if wrapInLoop then
-        actions = {{ type = "loop", children = actions }}
     end
     local actionMacros = {}
     for _, a in ipairs(actions) do actionMacros[#actionMacros+1] = a.macro end
@@ -5538,28 +5531,6 @@ ShowConfigureDialog = function(parent)
             apHint:SetPoint("LEFT", apBtn, "RIGHT", 6, 0)
             apHint:SetText("Auto-push when Best Sequence is generated")
             apHint:SetTextColor(C.text[1], C.text[2], C.text[3], 0.5)
-            y = y - 36
-
-            -- Loop block checkbox
-            local lpLabel = panel:CreateFontString(nil, "OVERLAY")
-            SafeSetFont(lpLabel, FONT, 11)
-            lpLabel:SetPoint("TOPLEFT", panel, "TOPLEFT", 16, y)
-            lpLabel:SetText("Wrap in Loop block:")
-            lpLabel:SetTextColor(C.textHl[1], C.textHl[2], C.textHl[3], C.textHl[4])
-            local lpBtn = CreateStyledFrame("Button", nil, panel)
-            lpBtn:SetSize(18, 18)
-            lpBtn:SetPoint("TOPLEFT", panel, "TOPLEFT", 260, y - 2)
-            lpBtn:SetBackdrop({bgFile = "Interface\\BUTTONS\\WHITE8X8", edgeSize = 0})
-            lpBtn:SetBackdropColor(s.loopBlock and 0.2 or 0.05, s.loopBlock and 0.8 or 0.05, s.loopBlock and 0.2 or 0.05, 0.9)
-            lpBtn:SetScript("OnClick", function()
-                s.loopBlock = not s.loopBlock
-                lpBtn:SetBackdropColor(s.loopBlock and 0.2 or 0.05, s.loopBlock and 0.8 or 0.05, s.loopBlock and 0.2 or 0.05, 0.9)
-            end)
-            local lpHint = panel:CreateFontString(nil, "OVERLAY")
-            SafeSetFont(lpHint, FONT, 9)
-            lpHint:SetPoint("LEFT", lpBtn, "RIGHT", 6, 0)
-            lpHint:SetText("Wraps steps in a GRIP-EMS Loop block (action tree)")
-            lpHint:SetTextColor(C.text[1], C.text[2], C.text[3], 0.5)
             y = y - 36
 
             -- KeyPress edit
